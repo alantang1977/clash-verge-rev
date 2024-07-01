@@ -2,7 +2,19 @@ import { ReactNode, useEffect, useState } from "react";
 import { useLockFn } from "ahooks";
 import yaml from "js-yaml";
 import { useTranslation } from "react-i18next";
-
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
 import {
   Autocomplete,
   Button,
@@ -16,12 +28,11 @@ import {
   TextField,
   styled,
 } from "@mui/material";
-import { useThemeMode } from "@/services/states";
+
 import { readProfileFile, saveProfileFile } from "@/services/cmds";
 import { Notice, Switch } from "@/components/base";
 import getSystem from "@/utils/get-system";
-
-import Editor from "@monaco-editor/react";
+import { RuleItem } from "@/components/profile/rule-item";
 
 interface Props {
   profileUid: string;
@@ -120,10 +131,7 @@ export const RulesEditorViewer = (props: Props) => {
   const { title, profileUid, property, open, onClose, onChange } = props;
   const { t } = useTranslation();
 
-  const themeMode = useThemeMode();
   const [prevData, setPrevData] = useState("");
-  const [currData, setCurrData] = useState("");
-  const [rule, setRule] = useState("");
   const [ruleType, setRuleType] =
     useState<(typeof RuleTypeList)[number]>("DOMAIN");
   const [ruleContent, setRuleContent] = useState("");
@@ -131,80 +139,77 @@ export const RulesEditorViewer = (props: Props) => {
   const [proxyPolicy, setProxyPolicy] = useState("DIRECT");
   const [proxyPolicyList, setProxyPolicyList] = useState<string[]>([]);
   const [ruleList, setRuleList] = useState<string[]>([]);
+  const [ruleSetList, setRuleSetList] = useState<string[]>([]);
+  const [subRuleList, setSubRuleList] = useState<string[]>([]);
 
-  const editorOptions = {
-    tabSize: 2,
-    minimap: { enabled: false },
-    mouseWheelZoom: true,
-    quickSuggestions: {
-      strings: true,
-      comments: true,
-      other: true,
-    },
-    padding: {
-      top: 33,
-    },
-    fontFamily: `Fira Code, JetBrains Mono, Roboto Mono, "Source Code Pro", Consolas, Menlo, Monaco, monospace, "Courier New", "Apple Color Emoji"${
-      getSystem() === "windows" ? ", twemoji mozilla" : ""
-    }`,
-    fontLigatures: true,
-    smoothScrolling: true,
+  const [prependSeq, setPrependSeq] = useState<string[]>([]);
+  const [appendSeq, setAppendSeq] = useState<string[]>([]);
+  const [deleteSeq, setDeleteSeq] = useState<string[]>([]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+  const reorder = (list: string[], startIndex: number, endIndex: number) => {
+    const result = Array.from(list);
+    const [removed] = result.splice(startIndex, 1);
+    result.splice(endIndex, 0, removed);
+    return result;
   };
-
+  const onPrependDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over) {
+      if (active.id !== over.id) {
+        let activeIndex = prependSeq.indexOf(active.id.toString());
+        let overIndex = prependSeq.indexOf(over.id.toString());
+        setPrependSeq(reorder(prependSeq, activeIndex, overIndex));
+      }
+    }
+  };
+  const onAppendDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over) {
+      if (active.id !== over.id) {
+        let activeIndex = appendSeq.indexOf(active.id.toString());
+        let overIndex = appendSeq.indexOf(over.id.toString());
+        setAppendSeq(reorder(appendSeq, activeIndex, overIndex));
+      }
+    }
+  };
   const fetchContent = async () => {
     let data = await readProfileFile(property);
-    setCurrData(data);
+    let obj = yaml.load(data) as { prepend: []; append: []; delete: [] };
+
+    setPrependSeq(obj.prepend || []);
+    setAppendSeq(obj.append || []);
+    setDeleteSeq(obj.delete || []);
     setPrevData(data);
   };
 
   const fetchProfile = async () => {
     let data = await readProfileFile(profileUid);
-    let obj = yaml.load(data) as { "proxy-groups": []; proxies: []; rules: [] };
-    if (!obj["proxy-groups"]) {
-      obj = { "proxy-groups": [], proxies: [], rules: [] };
-    }
+    let groupsObj = yaml.load(data) as { "proxy-groups": [] };
+    let rulesObj = yaml.load(data) as { rules: [] };
+    let ruleSetObj = yaml.load(data) as { "rule-providers": [] };
+    let subRuleObj = yaml.load(data) as { "sub-rules": [] };
     setProxyPolicyList(
       BuiltinProxyPolicyList.concat(
-        obj["proxy-groups"].map((item: any) => item.name)
+        groupsObj["proxy-groups"]
+          ? groupsObj["proxy-groups"].map((item: any) => item.name)
+          : []
       )
     );
-    setRuleList(obj.rules);
-  };
-
-  const addSeq = async (method: "prepend" | "append" | "delete") => {
-    let obj = yaml.load(currData) as ISeqProfileConfig;
-    if (!obj.prepend) {
-      obj = { prepend: [], append: [], delete: [] };
-    }
-    switch (method) {
-      case "append": {
-        obj.append.push(
-          `${ruleType}${
-            ruleType === "MATCH" ? "" : "," + ruleContent
-          },${proxyPolicy}${
-            NoResolveList.includes(ruleType) && noResolve ? ",no-resolve" : ""
-          }`
-        );
-        break;
-      }
-      case "prepend": {
-        obj.prepend.push(
-          `${ruleType}${
-            ruleType === "MATCH" ? "" : "," + ruleContent
-          },${proxyPolicy}${
-            NoResolveList.includes(ruleType) && noResolve ? ",no-resolve" : ""
-          }`
-        );
-        break;
-      }
-      case "delete": {
-        obj.delete.push(rule);
-        break;
-      }
-    }
-    let raw = yaml.dump(obj);
-
-    setCurrData(raw);
+    setRuleList(rulesObj.rules || []);
+    setRuleSetList(
+      ruleSetObj["rule-providers"]
+        ? Object.keys(ruleSetObj["rule-providers"])
+        : []
+    );
+    setSubRuleList(
+      subRuleObj["sub-rules"] ? Object.keys(subRuleObj["sub-rules"]) : []
+    );
   };
 
   useEffect(() => {
@@ -214,6 +219,11 @@ export const RulesEditorViewer = (props: Props) => {
 
   const onSave = useLockFn(async () => {
     try {
+      let currData = yaml.dump({
+        prepend: prependSeq,
+        append: appendSeq,
+        delete: deleteSeq,
+      });
       await saveProfileFile(property, currData);
       onChange?.(prevData, currData);
       onClose();
@@ -249,15 +259,41 @@ export const RulesEditorViewer = (props: Props) => {
             </Item>
             <Item>
               <ListItemText primary={t("Rule Content")} />
-              <TextField
-                size="small"
-                sx={{ minWidth: "240px" }}
-                value={ruleContent}
-                placeholder={ExampleMap[ruleType]}
-                onChange={(e) => {
-                  setRuleContent(e.target.value);
-                }}
-              />
+              {ruleType === "RULE-SET" && (
+                <Autocomplete
+                  size="small"
+                  sx={{ minWidth: "240px" }}
+                  value={ruleContent}
+                  options={ruleSetList}
+                  onChange={(_, v) => {
+                    if (v) setRuleContent(v);
+                  }}
+                  renderInput={(params) => <TextField {...params} />}
+                />
+              )}
+              {ruleType === "SUB-RULE" && (
+                <Autocomplete
+                  size="small"
+                  sx={{ minWidth: "240px" }}
+                  value={ruleContent}
+                  options={subRuleList}
+                  onChange={(_, v) => {
+                    if (v) setRuleContent(v);
+                  }}
+                  renderInput={(params) => <TextField {...params} />}
+                />
+              )}
+              {ruleType !== "RULE-SET" && ruleType !== "SUB-RULE" && (
+                <TextField
+                  size="small"
+                  sx={{ minWidth: "240px" }}
+                  value={ruleContent}
+                  placeholder={ExampleMap[ruleType]}
+                  onChange={(e) => {
+                    setRuleContent(e.target.value);
+                  }}
+                />
+              )}
             </Item>
             <Item>
               <ListItemText primary={t("Proxy Policy")} />
@@ -289,7 +325,15 @@ export const RulesEditorViewer = (props: Props) => {
               fullWidth
               variant="contained"
               onClick={() => {
-                addSeq("prepend");
+                let raw = `${ruleType}${
+                  ruleType === "MATCH" ? "" : "," + ruleContent
+                },${proxyPolicy}${
+                  NoResolveList.includes(ruleType) && noResolve
+                    ? ",no-resolve"
+                    : ""
+                }`;
+                if (prependSeq.includes(raw)) return;
+                setPrependSeq([...prependSeq, raw]);
               }}
             >
               {t("Add Prepend Rule")}
@@ -300,34 +344,18 @@ export const RulesEditorViewer = (props: Props) => {
               fullWidth
               variant="contained"
               onClick={() => {
-                addSeq("append");
+                let raw = `${ruleType}${
+                  ruleType === "MATCH" ? "" : "," + ruleContent
+                },${proxyPolicy}${
+                  NoResolveList.includes(ruleType) && noResolve
+                    ? ",no-resolve"
+                    : ""
+                }`;
+                if (appendSeq.includes(raw)) return;
+                setAppendSeq([...appendSeq, raw]);
               }}
             >
               {t("Add Append Rule")}
-            </Button>
-          </Item>
-          <Item>
-            <Autocomplete
-              fullWidth
-              size="small"
-              sx={{ minWidth: "240px" }}
-              value={rule}
-              options={ruleList}
-              onChange={(_, v) => {
-                if (v) setRule(v);
-              }}
-              renderInput={(params) => <TextField {...params} />}
-            />
-          </Item>
-          <Item>
-            <Button
-              fullWidth
-              variant="contained"
-              onClick={() => {
-                addSeq("delete");
-              }}
-            >
-              {t("Delete Rule")}
             </Button>
           </Item>
         </div>
@@ -336,19 +364,86 @@ export const RulesEditorViewer = (props: Props) => {
             display: "inline-block",
             width: "50%",
             height: "100%",
+            overflow: "auto",
             marginLeft: "10px",
           }}
         >
-          <Editor
-            language="yaml"
-            theme={themeMode === "light" ? "vs" : "vs-dark"}
-            height="100%"
-            value={currData}
-            onChange={(value, _) => {
-              if (value) setCurrData(value);
-            }}
-            options={editorOptions}
-          />
+          {prependSeq.length > 0 && (
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={onPrependDragEnd}
+            >
+              <List sx={{ borderBottom: "solid 1px var(--divider-color)" }}>
+                <SortableContext
+                  items={prependSeq.map((x) => {
+                    return x;
+                  })}
+                >
+                  {prependSeq.map((item, index) => {
+                    return (
+                      <RuleItem
+                        key={`${item}-${index}`}
+                        type="prepend"
+                        ruleRaw={item}
+                        onDelete={() => {
+                          setPrependSeq(prependSeq.filter((v) => v !== item));
+                        }}
+                      />
+                    );
+                  })}
+                </SortableContext>
+              </List>
+            </DndContext>
+          )}
+
+          <List>
+            {ruleList.map((item, index) => {
+              return (
+                <RuleItem
+                  key={`${item}-${index}`}
+                  type={deleteSeq.includes(item) ? "delete" : "original"}
+                  ruleRaw={item}
+                  onDelete={() => {
+                    if (deleteSeq.includes(item)) {
+                      setDeleteSeq(deleteSeq.filter((v) => v !== item));
+                    } else {
+                      setDeleteSeq([...deleteSeq, item]);
+                    }
+                  }}
+                />
+              );
+            })}
+          </List>
+
+          {appendSeq.length > 0 && (
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={onAppendDragEnd}
+            >
+              <SortableContext
+                items={appendSeq.map((x) => {
+                  return x;
+                })}
+              >
+                <List sx={{ borderTop: "solid 1px var(--divider-color)" }}>
+                  {appendSeq.map((item, index) => {
+                    return (
+                      <RuleItem
+                        key={`${item}-${index}`}
+                        type="append"
+                        ruleRaw={item}
+                        onDelete={() => {
+                          setAppendSeq(appendSeq.filter((v) => v !== item));
+                        }}
+                      />
+                    );
+                  })}
+                </List>
+              </SortableContext>
+            </DndContext>
+          )}
         </div>
       </DialogContent>
 
